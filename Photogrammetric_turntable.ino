@@ -56,7 +56,7 @@ const int LCD_COLS = 16;
 const int LCD_ROWS = 2;
 
 // We will emulate a BLE Keyboard
-BleKeyboard myKB("Bluetooth shutter", "Espressif", 100);
+BleKeyboard myKB("3D Turntable");
 
 // Global variables for joystick operation
 int SwValue = 1;
@@ -265,6 +265,7 @@ void setup() {
     Serial.println(MyDefaults.DefaultPhotos, DEC);
     Serial.print("Default key to send= ");
     Serial.print(MyDefaults.DefaultKey2Send, DEC);
+    // Serial.println(" (1=Volume Down; 2=Volume Up)");
     Serial.println(" (1=Enter; 2=Volume Up)");
     Serial.print("Default delay before= ");
     Serial.println(MyDefaults.DefaultDelayBefore, DEC);
@@ -590,9 +591,13 @@ void takePhoto() {
       Serial.println("Sending Volume Up key for IOS devices ...");
       myKB.write(KEY_MEDIA_VOLUME_UP);
     } else {
-      Serial.println("Sending Volume Down key for Android devices ...");
-      myKB.write(KEY_MEDIA_VOLUME_DOWN);
+      // Serial.println("Sending Volume Down key for Android devices ...");
+      // myKB.write(KEY_MEDIA_VOLUME_DOWN);
+      Serial.println("Sending Enter key for Android devices ...");
+      myKB.write(KEY_RETURN);
     }
+  } else {
+    Serial.println("Unable to send key stroke, not connected to phone.");
   }
 }
 

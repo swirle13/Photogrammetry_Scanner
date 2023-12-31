@@ -6,11 +6,50 @@
   Reworked the Menu system
   Added saving defaults to EEPROM and retrieving then at startup
   Added BT HID Keyboard operation to eliminate the servo that operates BT Remote shutter
+
+  Changes by swirle13:
+  * Updated LCD library to a currently-maintained library for an I2C LCD: hd44780
+  * Fixed output in placeholderPrint() for CurDelayAfter displaying wrong value
+  * Reduced defaults struct size stored in EEPROM
+  * Added code to turn off signal to stepper motor when not in use to prevent overheating
+  * Added common-sense output to rotation direction
+  * Added prevention for being stuck in photo-taking modes if not connected to phone,
+    will prompt user phone is not connected and won't start photos.
+  
+  To use this version, you must install the following:
+  * hd44780 library. Installation instructions: https://github.com/duinoWitchery/hd44780
+    Double check your LCD uses the HD44780 module to ensure this is compatible (literally printed
+    on one of the soldered components on the back of the LCD). If it uses a different module,
+    you'll need to update this library to an appropriate library and update the code, if necessary.
+  * ESP32-BLE-Keyboard library. Installation instructions: https://github.com/T-vK/ESP32-BLE-Keyboard
+    * IF YOU WISH TO PREVENT ANNOYING BLUETOOTH ISSUES, DOWNLOAD V0.3.2-BETA FROM THE RELEASES
+      PAGE https://github.com/T-vK/ESP32-BLE-Keyboard/releases OR DIRECTLY FROM 
+      https://github.com/T-vK/ESP32-BLE-Keyboard/archive/refs/tags/0.3.2-beta.zip
+  * NimBLE-Arduino 1.4.1+ library. Install ia Library Manager on left side by searching name
+    and clicking "Install"
+  
+
+  NOTE: There is an issue with pairing with the phone (perhaps Android-specific) that does
+  not allow the take-photo button to work once the turntable has been turned off and back on.
+
+  ANNOYING FIX: you need to repair the device via bluetooth with your phone for the emulated
+  key press to work again.
+
+  ONE-TIME BETTER FIX:
+  1. Install NimBLE-Arduino 1.4.1+ via Library Manager
+  2. Find your ESP32-BLE-Keyboard install file (MUST BE 0.3.2-beta for this workaround)
+     * MacOS: /Users/{username}/Documents/Arduino/Libraries/ESP32_BLE_Keyboard
+     * Windows: C:\Users\{username}\Documents\Arduino\Libraries\ESP32_BLE_Keyboard
+     * Linux: /home/{username}/Arduino/Libraries/ESP32_BLE_Keyboard
+  3. Open up BleKeyboard.h
+  4. Uncomment "#define USE_NIMBLE" at the top of the file (will only show up if you downloaded
+     v0.3.2-beta, will not exist if you have previous versions.)
+  5. Save the changes, reload Arduino IDE, and upload the sketch to your ESP32.
 */
 //============================================================================================
 
-#include <Wire.h>  // needed for the LCD I2C library.
 #include <hd44780.h>
+#include <Wire.h>                           // needed for the LCD I2C library.
 #include <hd44780ioClass/hd44780_I2Cexp.h>  // i2c LCD i/o class header
 #include <EEPROM.h>                         // We will get/put the default settings from/to te EEPROM
 #include <Stepper.h>                        // Lib for the stepper motors
@@ -33,9 +72,9 @@
 #define HIGH_THRESHOLD 3500  // above this analog value, joystick is considered high
 #define SLOW_FASTCHANGEDELAY 600
 #define FASTCHANGEDELAY 200
-
-#define DEFAULTS_EYECATCHER 0b10101010
 #define DEFAULTS_VERSION 0x01
+#define CLOCKWISE 0
+#define COUNTERCLOCKWISE 1
 
 // Get the number of elements in a given array.
 // Use like `len(myvar)`
@@ -44,7 +83,7 @@ template<class T, size_t N> constexpr size_t len(const T (&)[N]) {
 }
 
 // Stepper parameters
-const int stepsPerRevolution = 2048;                                        // change this to fit the number of steps per revolution
+const int stepsPerRevolution = 2048;                                        // change this to fit the number of steps per revolution for your stepper motor
 int FullRev = 7 * stepsPerRevolution;                                       // 1 full revolution of the big gear -> Small-Big gear ratio is 7:1
 Stepper myStepper(stepsPerRevolution, IN1_PIN, IN3_PIN, IN2_PIN, IN4_PIN);  // Use these pins for the stepper motor
 
@@ -55,7 +94,6 @@ hd44780_I2Cexp lcd;  // Assumes default I2C address of 0x27
 const int LCD_COLS = 16;
 const int LCD_ROWS = 2;
 
-// We will emulate a BLE Keyboard
 BleKeyboard myKB("3D Turntable");
 
 // Global variables for joystick operation
@@ -71,15 +109,15 @@ bool prevDirection = 0;
 int MainMenuPos = 0;
 int SubMenuPos = 0;
 char MainMenu[6][MENUITEM_LENGTH] = {
-  "Main Menu      ",
+  "Photo Mode     ",
   "Photogrammetric",
   "Cinematic      ",
-  "Manual mode    ",
+  "Manual         ",
   "Defaults       "
 };
 char PhotoMenu[7][MENUITEM_LENGTH] = {
   "> Photogrametry",
-  "#P#",  // placeholder nmbr of photos
+  "#P#",  // placeholder number of photos
   "#S#",  // placeholder motor speed
   "#B#",  // placeholder delay before
   "#A#",  // placeholder delay after
@@ -88,7 +126,7 @@ char PhotoMenu[7][MENUITEM_LENGTH] = {
 };
 char CineMenu[5][MENUITEM_LENGTH] = {
   "> Cinematic    ",
-  "#T#",  // placeholder nmbr of turns
+  "#T#",  // placeholder number of turns
   "#S#",  // placeholder motor speed
   "Press to start ",
   "Return to Main "
@@ -102,11 +140,11 @@ char ManualMenu[5][MENUITEM_LENGTH] = {
 };
 char DefaultsMenu[11][MENUITEM_LENGTH] = {
   "> Defaults     ",
-  "#P#",  // placeholder nmbr of photos
-  "#T#",  // placeholder nmbr of turns
+  "#P#",  // placeholder number of photos
+  "#T#",  // placeholder number of turns
   "#S#",  // placeholder motor speed
   "#Z#",  // placeholder step size
-  "#D#",  // placeholder key to send
+  "#D#",  // placeholder direction to rotate
   "#K#",  // placeholder key to send
   "#B#",  // placeholder delay before
   "#A#",  // placeholder delay after
@@ -114,7 +152,7 @@ char DefaultsMenu[11][MENUITEM_LENGTH] = {
   "Return to Main "
 };
 
-// FastChange variables
+// FastChange variables, allows holding of inputs to rapidly increment values
 const unsigned long FastDelay = 1000;  // delay mode time (before values change fast)
 int FastChng = 0;                      // indicates fast change value mode.  0 = off, 1 = up mode, -1 = down mode
 unsigned long SetTime = 0;             // time value for fast change & button cancel modes.  Used to calculate time intervals
@@ -124,7 +162,7 @@ const int MAX_PHOTOS = 200;
 const int MIN_PHOTOS = 2;
 const int MAX_TURNS = 200;
 const int MIN_TURNS = 1;
-const int MAX_SPEED = 17;
+const int MAX_SPEED = 17;  // 17 is the max, but is inaccurate beyond 15. 1 rotation will be less than 360 degrees
 const int MIN_SPEED = 1;
 const int MAX_SIZE = 150;
 const int MIN_SIZE = 1;
@@ -147,68 +185,22 @@ int CurKey2Send;
 
 // The structure used to store defaults to the EEPROM
 struct MyDefaults_struct {
-  uint8_t EyeCatcher;
   uint8_t Version;
-  int DefaultGearRatio;
-  int DefaultTurns;
-  int DefaultSpeed;
-  int DefaultPhotos;
-  int DefaultStepSize;
-  int DefaultKey2Send;
-  int DefaultDelayBefore;
-  int DefaultDelayAfter;
-  char DefaultDirection;
+  uint8_t DefaultGearRatio;
+  uint8_t DefaultTurns;
+  uint8_t DefaultSpeed;
+  uint8_t DefaultPhotos;
+  uint8_t DefaultStepSize;
+  uint8_t DefaultKey2Send;
+  uint8_t DefaultDelayBefore;
+  uint8_t DefaultDelayAfter;
+  uint8_t DefaultDirection;
 };
+
 int EEPROM_SIZE = sizeof(MyDefaults_struct);
-// The global instance of the default-structure
-MyDefaults_struct MyDefaults;
-const int eeAddress = 0;  // We expect the defaults to be at address 0 in the eeprom
+MyDefaults_struct MyDefaults;  // The global instance of the default-structure
+const int eeAddress = 0;       // We expect the defaults to be at address 0 in the eeprom
 const int BAUDRATE = 9600;
-
-// enum rows_t {
-//   row1,
-//   row2
-// };
-
-// enum alignment_t {
-//   left,
-//   middle,
-//   right
-// };
-
-// struct startup_screen_struct {
-//   rows_t row = row1;
-//   alignment_t alignment = left;
-//   char text[];
-// };
-
-// Max chars per line is 40, total chars for 16x2 display is 80.
-// If both lines are used and both exceed 40 chars, will exceed
-// display data RAM (DDRAM) and override the other line.
-// void startupScreen(startup_screen_struct* phrases[], size_t delay_ms) {
-//   int len = 0;
-//   int offset = 0;
-
-//   for (startup_screen_struct& phrase : phrases) {
-//     len = len(phrase.text);
-//     if (len > MENUITEM_LENGTH) {
-//       phrase.alignment = left;
-//     }
-
-//     switch (phrase.alignment) {
-//       case left:
-//         // lcd.setCursor(offset, phrase.row);
-//         break;
-//       case middle:
-//         offset = (MENUITEM_LENGTH - len) / 2 break;
-//       case right:
-//         offset = (MENUITEM_LENGTH - len) break;
-//     }
-//     lcd.setCursor(offset, phrase.row);
-//     lcd.autoscroll();
-//     lcd.lineWrap();
-//   }
-// }
 
 //============================================================================================
 // setup
@@ -216,9 +208,8 @@ const int BAUDRATE = 9600;
 void setup() {
   int status;
   status = lcd.begin(LCD_COLS, LCD_ROWS);
-  if (status)  // non zero status means it was unsuccesful
-  {
-    // begin() failed so blink error code using the onboard LED if possible
+  if (status) {  // non zero status means it was unsuccesful
+    // begin() failed, so blink error code using the onboard LED, if possible
     hd44780::fatalError(status);  // does not return
   }
   lcd.backlight();                // LCD turn backlight on
@@ -226,71 +217,78 @@ void setup() {
   EEPROM.begin(EEPROM_SIZE);
   Serial.begin(BAUDRATE);
 
-  // Ready to connect via Bluetooth
   myKB.begin();
   Serial.println("Ready to connect over Bluetooth...");
 
-  // Read the defaults from the EEPROM
   Serial.println("Reading defaults from EEPROM...");
   EEPROM.get(eeAddress, MyDefaults);
 
-  if ((MyDefaults.EyeCatcher != DEFAULTS_EYECATCHER) || (MyDefaults.Version != DEFAULTS_VERSION)) {
+  if (MyDefaults.Version != DEFAULTS_VERSION) {
     // EEPROM does not have saved default values, so use hardcoded ones instead
     Serial.println("No defaults found in EEPROM...");
     Serial.println("Using hardcoded default values...");
     MyDefaults.DefaultGearRatio = 1;
     MyDefaults.DefaultTurns = 1;
     MyDefaults.DefaultSpeed = 15;
-    MyDefaults.DefaultPhotos = 8;
+    MyDefaults.DefaultPhotos = 30;
     MyDefaults.DefaultStepSize = 2;
-    MyDefaults.DefaultKey2Send = 1;
-    MyDefaults.DefaultDelayBefore = 1;  // 1=Vol.Down (Android), 2=Vol.Up (IOS)
+    MyDefaults.DefaultKey2Send = 1;  // 1 = Enter (Android), 2 = Volume Up (IOS)
+    MyDefaults.DefaultDelayBefore = 1;
     MyDefaults.DefaultDelayAfter = 1;
-    MyDefaults.DefaultDirection = 'L';  // L=Left (Clockwise), R=Right (Counterclockwise)
-    MyDefaults.EyeCatcher = DEFAULTS_EYECATCHER;
+    MyDefaults.DefaultDirection = CLOCKWISE;
     MyDefaults.Version = DEFAULTS_VERSION;
   } else {
     Serial.println("Defaults found in EEPROM...");
     Serial.print("Defaults version is ");
     Serial.println(MyDefaults.Version, DEC);
-    Serial.print("Default gear ratio= ");
+    Serial.print("Default gear ratio = ");
     Serial.println(MyDefaults.DefaultGearRatio, DEC);
-    Serial.print("Default turns= ");
+    Serial.print("Default turns = ");
     Serial.println(MyDefaults.DefaultTurns, DEC);
-    Serial.print("Default manual step-size= ");
+    Serial.print("Default manual step-size = ");
     Serial.println(MyDefaults.DefaultStepSize, DEC);
-    Serial.print("Default direction= ");
-    Serial.println(MyDefaults.DefaultDirection);
-    Serial.print("Default photos= ");
+    Serial.print("Default direction = ");
+    if (MyDefaults.DefaultDirection == CLOCKWISE) {
+      Serial.println("Clockwise");
+    } else if (MyDefaults.DefaultDirection == COUNTERCLOCKWISE) {
+      Serial.println("Counter-clockwise");
+    } else {
+      Serial.println("BAD VALUE");
+    }
+    Serial.print("Default photos = ");
     Serial.println(MyDefaults.DefaultPhotos, DEC);
-    Serial.print("Default key to send= ");
+    Serial.print("Default key to send = ");
     Serial.print(MyDefaults.DefaultKey2Send, DEC);
-    // Serial.println(" (1=Volume Down; 2=Volume Up)");
-    Serial.println(" (1=Enter; 2=Volume Up)");
-    Serial.print("Default delay before= ");
+    Serial.println(" (1 = Enter; 2 = Volume Up)");
+    Serial.print("Default delay before = ");
     Serial.println(MyDefaults.DefaultDelayBefore, DEC);
-    Serial.print("Default delay after= ");
+    Serial.print("Default delay after = ");
     Serial.println(MyDefaults.DefaultDelayAfter, DEC);
   }
   // Startup Screens
   lcd.setCursor(4, 0);
   lcd.print("Welcome!");
   lcd.setCursor(0, 1);
-  lcd.print("ESP32 Soft.V1.0.");
-  delay(3000);
+  lcd.print("Software V1.2");
+  delay(1000);
   lcd.clear();
   lcd.print("Designed by");
   lcd.setCursor(0, 1);
   lcd.print("Brian Brocken");
-  delay(3000);
+  delay(1000);
   lcd.clear();
   lcd.setCursor(0, 0);
   lcd.print("Software by");
   lcd.setCursor(0, 1);
   lcd.print("Marco64");
-  delay(3000);
+  delay(1000);
   lcd.clear();
-  // lcd.autoscroll("Bug fixes by swirle13")
+  lcd.setCursor(0, 0);
+  lcd.print("Bug fixes by");
+  lcd.setCursor(0, 1);
+  lcd.print("swirle13");
+  delay(1000);
+  lcd.clear();
 }
 
 //============================================================================================
@@ -421,6 +419,14 @@ void placeholderPrint(char* iPlaceholder) {
   } else if (strcmp(iPlaceholder, "#D#") == 0) {
     lcd.print("Direction:      ");
     lcd.setCursor(13, 1);
+    // TODO: Replace this with human-readable values
+    if (CurDirection == CLOCKWISE) {
+      lcd.print("CW ");
+    } else if (CurDirection == COUNTERCLOCKWISE) {
+      lcd.print("CCW");
+    } else {
+      lcd.print("BAD");
+    }
     lcd.print(CurDirection);
   } else if (strcmp(iPlaceholder, "#K#") == 0) {
     lcd.print("Shutter Key:    ");
@@ -477,8 +483,8 @@ void placeholderInc(char* iPlaceholder) {
     if (CurStepSize > MAX_SIZE) CurStepSize = MAX_SIZE;
     if (FastChng == 1) delay(FASTCHANGEDELAY);
   } else if (strcmp(iPlaceholder, "#D#") == 0) {
-    if (CurDirection == 'L') CurDirection = 'R';
-    else if (CurDirection == 'R') CurDirection = 'L';
+    if (CurDirection == CLOCKWISE) CurDirection = COUNTERCLOCKWISE;
+    else if (CurDirection == COUNTERCLOCKWISE) CurDirection = CLOCKWISE;
     if (FastChng == 1) delay(SLOW_FASTCHANGEDELAY);
   }
 }
@@ -517,8 +523,8 @@ void placeholderDec(char* iPlaceholder) {
     if (CurStepSize < MIN_SIZE) CurStepSize = MIN_SIZE;
     if (FastChng == -1) delay(FASTCHANGEDELAY);
   } else if (strcmp(iPlaceholder, "#D#") == 0) {
-    if (CurDirection == 'L') CurDirection = 'R';
-    else if (CurDirection == 'R') CurDirection = 'L';
+    if (CurDirection == CLOCKWISE) CurDirection = COUNTERCLOCKWISE;
+    else if (CurDirection == COUNTERCLOCKWISE) CurDirection = CLOCKWISE;
     if (FastChng == 1) delay(SLOW_FASTCHANGEDELAY);
   }
 }
@@ -591,8 +597,6 @@ void takePhoto() {
       Serial.println("Sending Volume Up key for IOS devices ...");
       myKB.write(KEY_MEDIA_VOLUME_UP);
     } else {
-      // Serial.println("Sending Volume Down key for Android devices ...");
-      // myKB.write(KEY_MEDIA_VOLUME_DOWN);
       Serial.println("Sending Enter key for Android devices ...");
       myKB.write(KEY_RETURN);
     }
@@ -612,33 +616,50 @@ void photoDialog() {
     switch (MenuChoice) {
       case (5):
         {
-          // Start Photogrammetric mode
-          // Show number of photos on LCD
-          lcd.clear();
-          lcd.setCursor(0, 0);
-          lcd.print("Running...");
-          myStepper.setSpeed(CurSpeed);  //Set RPM of steppermotor
-          //Calculate number of steps between photo's
-          int numSteps = FullRev / CurPhotos;
-          // Determine direction
-          if (CurDirection == 'L') numSteps = -numSteps;
+          if (myKB.isConnected()) {
+            // Start Photogrammetric mode, only if phone is connected
+            // Show number of photos on LCD
+            lcd.clear();
+            lcd.setCursor(0, 0);
+            lcd.print("Running...");
+            myStepper.setSpeed(CurSpeed);  // Set RPM of steppermotor
+            // Calculate number of steps between photo's
+            int numSteps = FullRev / CurPhotos;
+            // Determine direction
+            if (CurDirection == CLOCKWISE) numSteps = -numSteps;
 
-          int i = 1;
-          do {
+            int i = 1;
+            do {
+              lcd.setCursor(0, 1);
+              lcd.print("Photo ");
+              lcd.print(i);
+              lcd.print(" of ");
+              lcd.print(CurPhotos);
+              myStepper.step(numSteps);
+              delay(CurDelayBefore * 1000);
+              takePhoto();
+              delay(CurDelayAfter * 1000);
+              i++;
+            } while (i <= CurPhotos);
+            digitalWrite(16, LOW);  // logic level is low
+            digitalWrite(17, LOW);  // logic level is low
+            break;
+          } else {
+            // Phone is not connected, display warning and don't start photos
+            lcd.clear();
+            lcd.setCursor(0, 0);
+            lcd.print("Warning!        ");
             lcd.setCursor(0, 1);
-            lcd.print("Photo ");
-            lcd.print(i);
-            lcd.print(" of ");
-            lcd.print(CurPhotos);
-            myStepper.step(numSteps);
-            delay(CurDelayBefore * 1000);
-            takePhoto();
-            delay(CurDelayAfter * 1000);
-            i++;
-          } while (i <= CurPhotos);
-          digitalWrite(16, LOW);  // logic level is low
-          digitalWrite(17, LOW);  // logic level is low
-          break;
+            lcd.print("No Phone Connctd");
+            delay(3000);
+            lcd.clear();
+            lcd.setCursor(0, 0);
+            lcd.print("Skipping photos ");
+            lcd.setCursor(0, 1);
+            lcd.print("Pls pair & retry");
+            delay(3000);
+            break;
+          }
         }
       default:
         {
@@ -666,10 +687,10 @@ void cineDialog() {
           lcd.clear();
           lcd.setCursor(0, 0);
           lcd.print("Running...");
-          myStepper.setSpeed(CurSpeed);  //Set RPM of steppermotor
+          myStepper.setSpeed(CurSpeed);  // Set RPM of steppermotor
           int numSteps = FullRev;
           // Determine direction
-          if (CurDirection == 'L') numSteps = -numSteps;
+          if (CurDirection == CLOCKWISE) numSteps = -numSteps;
           do {
             lcd.setCursor(0, 1);
             lcd.print("Turn ");
@@ -708,7 +729,7 @@ void manualDialog() {
           lcd.clear();
           lcd.setCursor(0, 0);
           lcd.print("Press to leave.");
-          myStepper.setSpeed(CurSpeed);  //Set RPM of steppermotor
+          myStepper.setSpeed(CurSpeed);  // Set RPM of steppermotor
           do {
             readInputs();
             lcd.setCursor(0, 1);
@@ -745,7 +766,7 @@ void defaultsDialog() {
     switch (MenuChoice) {
       case (9):
         {
-          //Save the defaults to EEPROM
+          // Save the defaults to EEPROM
           MyDefaults.DefaultTurns = CurTurns;
           MyDefaults.DefaultPhotos = CurPhotos;
           MyDefaults.DefaultSpeed = CurSpeed;
@@ -811,6 +832,6 @@ void loop() {
   CurDelayBefore = MyDefaults.DefaultDelayBefore;
   CurDelayAfter = MyDefaults.DefaultDelayAfter;
   CurDirection = MyDefaults.DefaultDirection;
-  myStepper.setSpeed(CurSpeed);  //Set RPM of steppermotor
+  myStepper.setSpeed(CurSpeed);  // Set RPM of steppermotor
   mainMenu();
 }

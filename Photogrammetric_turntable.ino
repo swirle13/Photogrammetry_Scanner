@@ -1,59 +1,78 @@
-//============================================================================================
 /*
   Reworked the original code from Brian Brocken
 
   Using an ESP32 D1 R32 board for Bluetooth connectivity
   Reworked the Menu system
   Added saving defaults to EEPROM and retrieving then at startup
-  Added BT HID Keyboard operation to eliminate the servo that operates BT Remote shutter
+  Added BT HID Keyboard operation to eliminate the servo that operates BT Remote
+  shutter
 
   Changes by swirle13:
-  * Updated LCD library to a currently-maintained library for an I2C LCD: hd44780
+  * Updated LCD library to a currently-maintained library for an I2C LCD:
+  hd44780
   * Fixed output in placeholderPrint() for CurDelayAfter displaying wrong value
   * Reduced defaults struct size stored in EEPROM
-  * Added code to turn off signal to stepper motor when not in use to prevent overheating
+  * Added code to turn off signal to stepper motor when not in use to prevent
+  overheating
   * Added common-sense output to rotation direction
-  * Added prevention for being stuck in photo-taking modes if not connected to phone,
-    will prompt user phone is not connected and won't start photos.
-  
+  * Added prevention for being stuck in photo-taking modes if not connected to
+  phone, will prompt user phone is not connected and won't start photos.
+
   To use this version, you must install the following:
-  * hd44780 library. Installation instructions: https://github.com/duinoWitchery/hd44780
-    Double check your LCD uses the HD44780 module to ensure this is compatible (literally printed
-    on one of the soldered components on the back of the LCD). If it uses a different module,
-    you'll need to update this library to an appropriate library and update the code, if necessary.
-  * ESP32-BLE-Keyboard library. Installation instructions: https://github.com/T-vK/ESP32-BLE-Keyboard
-    * IF YOU WISH TO PREVENT ANNOYING BLUETOOTH ISSUES, DOWNLOAD V0.3.2-BETA FROM THE RELEASES
-      PAGE https://github.com/T-vK/ESP32-BLE-Keyboard/releases OR DIRECTLY FROM 
+  * hd44780 library. Installation instructions:
+  https://github.com/duinoWitchery/hd44780 Double check your LCD I2C backpack
+  uses the PCF8574T (or HLF8574T clone) or MCP23008 module to ensure this is
+  compatible. If it uses a different module, like HT16K33, you might need to
+  update the code, if necessary. See
+  https://forum.arduino.cc/t/what-is-the-best-i2c-lcd-library-for-pcf8574/426422/5
+  * ESP32-BLE-Keyboard library. Installation instructions:
+  https://github.com/T-vK/ESP32-BLE-Keyboard
+    * IF YOU WISH TO PREVENT ANNOYING BLUETOOTH ISSUES, DOWNLOAD V0.3.2-BETA
+  FROM THE RELEASES PAGE https://github.com/T-vK/ESP32-BLE-Keyboard/releases OR
+  DIRECTLY FROM
       https://github.com/T-vK/ESP32-BLE-Keyboard/archive/refs/tags/0.3.2-beta.zip
-  * NimBLE-Arduino 1.4.1+ library. Install ia Library Manager on left side by searching name
-    and clicking "Install"
-  
+  * NimBLE-Arduino 1.4.1+ library. Install ia Library Manager on left side by
+  searching name and clicking "Install"
 
-  NOTE: There is an issue with pairing with the phone (perhaps Android-specific) that does
-  not allow the take-photo button to work once the turntable has been turned off and back on.
+  NOTE: There is an issue with pairing with the phone (perhaps Android-specific)
+  that does not allow the take-photo button to work once the turntable has been
+  turned off and back on.
 
-  ANNOYING FIX: you need to repair the device via bluetooth with your phone for the emulated
-  key press to work again.
+  ANNOYING FIX: you need to repair the device via bluetooth with your phone for
+  the emulated key press to work again.
 
   ONE-TIME BETTER FIX:
-  1. Install NimBLE-Arduino 1.4.1+ via Library Manager
-  2. Find your ESP32-BLE-Keyboard install file (MUST BE 0.3.2-beta for this workaround)
+  1. Install NimBLE-Arduino 1.4.1+ via Library Manager side panel within Arduino
+  IDE.
+  2. Find your ESP32-BLE-Keyboard install file (MUST BE 0.3.2-beta for this
+  workaround)
      * MacOS: /Users/{username}/Documents/Arduino/Libraries/ESP32_BLE_Keyboard
-     * Windows: C:\Users\{username}\Documents\Arduino\Libraries\ESP32_BLE_Keyboard
+     * Windows:
+  C:\Users\{username}\Documents\Arduino\Libraries\ESP32_BLE_Keyboard
      * Linux: /home/{username}/Arduino/Libraries/ESP32_BLE_Keyboard
   3. Open up BleKeyboard.h
-  4. Uncomment "#define USE_NIMBLE" at the top of the file (will only show up if you downloaded
-     v0.3.2-beta, will not exist if you have previous versions.)
+  4. Uncomment "#define USE_NIMBLE" at the top of the file (will only show up if
+  you downloaded v0.3.2-beta, will not exist if you have previous versions.)
   5. Save the changes, reload Arduino IDE, and upload the sketch to your ESP32.
-*/
-//============================================================================================
 
+  If you're having problems flashing your ESP32, double check your device
+  settings via "Tools" and set your values to the ones that worked for me:
+  * Board: DOIT ESP32 DEVKIT V1
+  * Flash Frequency: 40MHz
+  * Upload Speed: 460800
+
+  As well as setting your "Serial Monitor" polling rate to "9600 baud", as set
+  in the code below. Otherwise, your serial output from the connected device
+  while running will be gibberish.
+*/
+
+
+#include <BleKeyboard.h>  // Lib for Bluetooth keyboard emulation
+#include <EEPROM.h>       // We will get/put the default settings from/to the EEPROM
+#include <Stepper.h>      // Lib for the stepper motors
+#include <Wire.h>         // needed for the LCD I2C library.
 #include <hd44780.h>
-#include <Wire.h>                           // needed for the LCD I2C library.
 #include <hd44780ioClass/hd44780_I2Cexp.h>  // i2c LCD i/o class header
-#include <EEPROM.h>                         // We will get/put the default settings from/to te EEPROM
-#include <Stepper.h>                        // Lib for the stepper motors
-#include <BleKeyboard.h>                    // Lib for Bluetooth keyboard emulation
 
 // Joystick Pins
 #define X_PIN 36  // analog pin connected to X output
@@ -67,9 +86,11 @@
 #define IN4_PIN 26
 
 // Menu-system
-#define MENUITEM_LENGTH 16   // max length of a menuitem
-#define LOW_THRESHOLD 500    // below this analog value, joystick is considered low
-#define HIGH_THRESHOLD 3500  // above this analog value, joystick is considered high
+#define MENUITEM_LENGTH 16  // max length of a menuitem
+// below this analog value, joystick is considered low
+#define LOW_THRESHOLD 500
+// above this analog value, joystick is considered high
+#define HIGH_THRESHOLD 3500
 #define SLOW_FASTCHANGEDELAY 600
 #define FASTCHANGEDELAY 200
 #define DEFAULTS_VERSION 0x01
@@ -83,9 +104,13 @@ template<class T, size_t N> constexpr size_t len(const T (&)[N]) {
 }
 
 // Stepper parameters
-const int stepsPerRevolution = 2048;                                        // change this to fit the number of steps per revolution for your stepper motor
-int FullRev = 7 * stepsPerRevolution;                                       // 1 full revolution of the big gear -> Small-Big gear ratio is 7:1
-Stepper myStepper(stepsPerRevolution, IN1_PIN, IN3_PIN, IN2_PIN, IN4_PIN);  // Use these pins for the stepper motor
+const int stepsPerRevolution = 2048;   // change this to fit the number of steps per revolution for your stepper motor
+int FullRev = 7 * stepsPerRevolution;  // 1 full revolution of the big gear -> Small-Big gear ratio is 7:1
+Stepper myStepper(stepsPerRevolution,
+                  IN1_PIN,
+                  IN3_PIN,
+                  IN2_PIN,
+                  IN4_PIN);  // Use these pins for the stepper motor
 
 // We use a 16x2 with I2C backpack
 hd44780_I2Cexp lcd;  // Assumes default I2C address of 0x27
@@ -113,7 +138,7 @@ char MainMenu[6][MENUITEM_LENGTH] = {
   "Photogrammetric",
   "Cinematic      ",
   "Manual         ",
-  "Defaults       "
+  "Defaults       ",
 };
 char PhotoMenu[7][MENUITEM_LENGTH] = {
   "> Photogrametry",
@@ -153,16 +178,21 @@ char DefaultsMenu[11][MENUITEM_LENGTH] = {
 };
 
 // FastChange variables, allows holding of inputs to rapidly increment values
-const unsigned long FastDelay = 1000;  // delay mode time (before values change fast)
-int FastChng = 0;                      // indicates fast change value mode.  0 = off, 1 = up mode, -1 = down mode
-unsigned long SetTime = 0;             // time value for fast change & button cancel modes.  Used to calculate time intervals
+// delay mode time (before values change fast)
+const unsigned long FastDelay = 1000;
+// indicates fast change value mode.  0 = off, 1 = up mode, -1 = down mode
+int FastChng = 0;
+// time value for fast change & button cancel modes. Used to calculate time
+// intervals
+unsigned long SetTime = 0;
 
 // Hardcoded operation parameter limits
 const int MAX_PHOTOS = 200;
 const int MIN_PHOTOS = 2;
 const int MAX_TURNS = 200;
 const int MIN_TURNS = 1;
-const int MAX_SPEED = 17;  // 17 is the max, but is inaccurate beyond 15. 1 rotation will be less than 360 degrees
+// 17 is the max, but is inaccurate beyond 15. 1 rotation will be less than 360 degrees
+const int MAX_SPEED = 17;
 const int MIN_SPEED = 1;
 const int MAX_SIZE = 150;
 const int MIN_SIZE = 1;
@@ -198,17 +228,16 @@ struct MyDefaults_struct {
 };
 
 int EEPROM_SIZE = sizeof(MyDefaults_struct);
-MyDefaults_struct MyDefaults;  // The global instance of the default-structure
-const int eeAddress = 0;       // We expect the defaults to be at address 0 in the eeprom
+// The global instance of the default-structure
+MyDefaults_struct MyDefaults;
+// We expect the defaults to be at address 0 in the eeprom
+const int eeAddress = 0;
 const int BAUDRATE = 9600;
 
-//============================================================================================
-// setup
-//============================================================================================
 void setup() {
   int status;
   status = lcd.begin(LCD_COLS, LCD_ROWS);
-  if (status) {  // non zero status means it was unsuccesful
+  if (status) {  // non zero status means it was unsuccessful
     // begin() failed, so blink error code using the onboard LED, if possible
     hd44780::fatalError(status);  // does not return
   }
@@ -291,9 +320,7 @@ void setup() {
   lcd.clear();
 }
 
-//============================================================================================
-// keyPressed - determines if the joystick is pressed
-//============================================================================================
+// Determines if the joystick is pressed
 bool keyPressed() {
   if ((SwValue == 0) && (SwPrevValue != SwValue)) {
     SetTime = 0;
@@ -304,9 +331,7 @@ bool keyPressed() {
   }
 }
 
-//============================================================================================
-// rightPressed - determines if the joystick is moved to the right
-//============================================================================================
+// Determines if the joystick is moved to the right
 bool rightPressed() {
   if ((XValue <= LOW_THRESHOLD) && (XPrevValue > LOW_THRESHOLD)) {
     prevDirection = 1;
@@ -319,9 +344,7 @@ bool rightPressed() {
   }
 }
 
-//============================================================================================
-// leftPressed - determines if the joystick is moved to the left
-//============================================================================================
+// Determines if the joystick is moved to the left
 bool leftPressed() {
   if ((XValue >= HIGH_THRESHOLD) && (XPrevValue < HIGH_THRESHOLD)) {
     prevDirection = 1;
@@ -334,9 +357,7 @@ bool leftPressed() {
   }
 }
 
-//============================================================================================
-// upPressed - determines if the joystick is moved up
-//============================================================================================
+// Determines if the joystick is moved up
 bool upPressed() {
   if ((YValue <= LOW_THRESHOLD) && (YPrevValue > LOW_THRESHOLD)) {
     SetTime = millis();
@@ -352,9 +373,7 @@ bool upPressed() {
   }
 }
 
-//============================================================================================
-// downPressed - determines if the joystick is moved down
-//============================================================================================
+// Determines if the joystick is moved down
 bool downPressed() {
   if ((YValue >= HIGH_THRESHOLD) && (YPrevValue < HIGH_THRESHOLD)) {
     SetTime = millis();
@@ -370,9 +389,7 @@ bool downPressed() {
   }
 }
 
-//============================================================================================
-// noDirection - determines if the joystick is in 'neutral' position
-//============================================================================================
+// Determines if the joystick is in 'neutral' position
 bool noDirection() {
   if ((YValue < HIGH_THRESHOLD) && (YValue > LOW_THRESHOLD) && (XValue < HIGH_THRESHOLD) && (XValue > LOW_THRESHOLD) && !keyPressed() && prevDirection == 1) {
     SetTime = 0;
@@ -384,25 +401,19 @@ bool noDirection() {
   }
 }
 
-//============================================================================================
-// readInputs - read the analog values from the joystick
-//============================================================================================
+// Reads the analog values from the joystick
 void readInputs() {
   // save previous values
   SwPrevValue = SwValue;
   XPrevValue = XValue;
   YPrevValue = YValue;
-  // Read all inputs
-  XValue = analogRead(X_PIN);     // Read the analog value from The X-axis from the joystick
-  YValue = analogRead(Y_PIN);     // Read the analog value from The Y-axis from the joystick
-  SwValue = digitalRead(SW_PIN);  // Read the digital value from The Button from the joystick
+  XValue = analogRead(X_PIN);
+  YValue = analogRead(Y_PIN);
+  SwValue = digitalRead(SW_PIN);
 }
 
-//============================================================================================
-// placeholderPrint - print menuitems with placeholders and their values to the LCD screen
-//============================================================================================
+// Prints `iMenuItems` with placeholders and their values to the LCD screen
 void placeholderPrint(char* iPlaceholder) {
-
   lcd.setCursor(0, 1);
   if (strcmp(iPlaceholder, "#P#") == 0) {
     lcd.print("# Photos:      ");
@@ -419,7 +430,6 @@ void placeholderPrint(char* iPlaceholder) {
   } else if (strcmp(iPlaceholder, "#D#") == 0) {
     lcd.print("Direction:      ");
     lcd.setCursor(13, 1);
-    // TODO: Replace this with human-readable values
     if (CurDirection == CLOCKWISE) {
       lcd.print("CW ");
     } else if (CurDirection == COUNTERCLOCKWISE) {
@@ -449,95 +459,122 @@ void placeholderPrint(char* iPlaceholder) {
   }
 }
 
-//============================================================================================
-// placeholderInc - increment the variable using its placeholder
-//============================================================================================
+// Increments the variable using its provided `iPlaceholder`.
+// TODO: Consolidate placeholderInc() and placeholderDec() to be interfaces
+// for the same logic with increment/decrement passed as an arg.
 void placeholderInc(char* iPlaceholder) {
-
   if (strcmp(iPlaceholder, "#P#") == 0) {
     CurPhotos += 2;  // step by 2 at a time
-    if (CurPhotos > MAX_PHOTOS) CurPhotos = MAX_PHOTOS;
-    if (FastChng == 1) delay(FASTCHANGEDELAY);
+    if (CurPhotos > MAX_PHOTOS)
+      CurPhotos = MAX_PHOTOS;
+    if (FastChng == 1)
+      delay(FASTCHANGEDELAY);
   } else if (strcmp(iPlaceholder, "#T#") == 0) {
     CurTurns++;
-    if (CurTurns > MAX_TURNS) CurTurns = MAX_TURNS;
-    if (FastChng == 1) delay(FASTCHANGEDELAY);
+    if (CurTurns > MAX_TURNS)
+      CurTurns = MAX_TURNS;
+    if (FastChng == 1)
+      delay(FASTCHANGEDELAY);
   } else if (strcmp(iPlaceholder, "#S#") == 0) {
     CurSpeed++;
-    if (CurSpeed > MAX_SPEED) CurSpeed = MAX_SPEED;
-    if (FastChng == 1) delay(SLOW_FASTCHANGEDELAY);
+    if (CurSpeed > MAX_SPEED)
+      CurSpeed = MAX_SPEED;
+    if (FastChng == 1)
+      delay(SLOW_FASTCHANGEDELAY);
   } else if (strcmp(iPlaceholder, "#K#") == 0) {
     CurKey2Send++;
-    if (CurKey2Send > MAX_KEY) CurKey2Send = MAX_KEY;
-    if (FastChng == 1) delay(SLOW_FASTCHANGEDELAY);
+    if (CurKey2Send > MAX_KEY)
+      CurKey2Send = MAX_KEY;
+    if (FastChng == 1)
+      delay(SLOW_FASTCHANGEDELAY);
   } else if (strcmp(iPlaceholder, "#B#") == 0) {
     CurDelayBefore++;
-    if (CurDelayBefore > MAX_BEFORE) CurDelayBefore = MAX_BEFORE;
-    if (FastChng == 1) delay(SLOW_FASTCHANGEDELAY);
+    if (CurDelayBefore > MAX_BEFORE)
+      CurDelayBefore = MAX_BEFORE;
+    if (FastChng == 1)
+      delay(SLOW_FASTCHANGEDELAY);
   } else if (strcmp(iPlaceholder, "#A#") == 0) {
     CurDelayAfter++;
-    if (CurDelayAfter > MAX_AFTER) CurDelayAfter = MAX_AFTER;
-    if (FastChng == 1) delay(SLOW_FASTCHANGEDELAY);
+    if (CurDelayAfter > MAX_AFTER)
+      CurDelayAfter = MAX_AFTER;
+    if (FastChng == 1)
+      delay(SLOW_FASTCHANGEDELAY);
   } else if (strcmp(iPlaceholder, "#Z#") == 0) {
     CurStepSize++;
-    if (CurStepSize > MAX_SIZE) CurStepSize = MAX_SIZE;
-    if (FastChng == 1) delay(FASTCHANGEDELAY);
+    if (CurStepSize > MAX_SIZE)
+      CurStepSize = MAX_SIZE;
+    if (FastChng == 1)
+      delay(FASTCHANGEDELAY);
   } else if (strcmp(iPlaceholder, "#D#") == 0) {
-    if (CurDirection == CLOCKWISE) CurDirection = COUNTERCLOCKWISE;
-    else if (CurDirection == COUNTERCLOCKWISE) CurDirection = CLOCKWISE;
-    if (FastChng == 1) delay(SLOW_FASTCHANGEDELAY);
+    if (CurDirection == CLOCKWISE)
+      CurDirection = COUNTERCLOCKWISE;
+    else if (CurDirection == COUNTERCLOCKWISE)
+      CurDirection = CLOCKWISE;
+    if (FastChng == 1)
+      delay(SLOW_FASTCHANGEDELAY);
   }
 }
 
-//============================================================================================
-// placeholderDec - decrement the variable using its placeholder
-//============================================================================================
+// Decrements the variable using its provided `iPlaceholder`.
+// TODO: Consolidate placeholderInc() and placeholderDec() to be interfaces
+// for the same logic with increment/decrement passed as an arg.
 void placeholderDec(char* iPlaceholder) {
-
   if (strcmp(iPlaceholder, "#P#") == 0) {
     CurPhotos -= 2;  // step by 2 at a time
-    if (CurPhotos < MIN_PHOTOS) CurPhotos = MIN_PHOTOS;
-    if (FastChng == -1) delay(FASTCHANGEDELAY);
+    if (CurPhotos < MIN_PHOTOS)
+      CurPhotos = MIN_PHOTOS;
+    if (FastChng == -1)
+      delay(FASTCHANGEDELAY);
   } else if (strcmp(iPlaceholder, "#T#") == 0) {
     CurTurns--;
-    if (CurTurns < MIN_TURNS) CurTurns = MIN_TURNS;
-    if (FastChng == -1) delay(FASTCHANGEDELAY);
+    if (CurTurns < MIN_TURNS)
+      CurTurns = MIN_TURNS;
+    if (FastChng == -1)
+      delay(FASTCHANGEDELAY);
   } else if (strcmp(iPlaceholder, "#S#") == 0) {
     CurSpeed--;
-    if (CurSpeed < MIN_SPEED) CurSpeed = MIN_SPEED;
-    if (FastChng == -1) delay(SLOW_FASTCHANGEDELAY);
+    if (CurSpeed < MIN_SPEED)
+      CurSpeed = MIN_SPEED;
+    if (FastChng == -1)
+      delay(SLOW_FASTCHANGEDELAY);
   } else if (strcmp(iPlaceholder, "#K#") == 0) {
     CurKey2Send--;
-    if (CurKey2Send < MIN_KEY) CurKey2Send = MIN_KEY;
-    if (FastChng == -1) delay(SLOW_FASTCHANGEDELAY);
+    if (CurKey2Send < MIN_KEY)
+      CurKey2Send = MIN_KEY;
+    if (FastChng == -1)
+      delay(SLOW_FASTCHANGEDELAY);
   } else if (strcmp(iPlaceholder, "#B#") == 0) {
     CurDelayBefore--;
-    if (CurDelayBefore < MIN_BEFORE) CurDelayBefore = MIN_BEFORE;
-    if (FastChng == -1) delay(SLOW_FASTCHANGEDELAY);
+    if (CurDelayBefore < MIN_BEFORE)
+      CurDelayBefore = MIN_BEFORE;
+    if (FastChng == -1)
+      delay(SLOW_FASTCHANGEDELAY);
   } else if (strcmp(iPlaceholder, "#A#") == 0) {
     CurDelayAfter--;
-    if (CurDelayAfter < MIN_AFTER) CurDelayAfter = MIN_AFTER;
-    if (FastChng == -1) delay(SLOW_FASTCHANGEDELAY);
+    if (CurDelayAfter < MIN_AFTER)
+      CurDelayAfter = MIN_AFTER;
+    if (FastChng == -1)
+      delay(SLOW_FASTCHANGEDELAY);
   } else if (strcmp(iPlaceholder, "#Z#") == 0) {
     CurStepSize--;
-    if (CurStepSize < MIN_SIZE) CurStepSize = MIN_SIZE;
-    if (FastChng == -1) delay(FASTCHANGEDELAY);
+    if (CurStepSize < MIN_SIZE)
+      CurStepSize = MIN_SIZE;
+    if (FastChng == -1)
+      delay(FASTCHANGEDELAY);
   } else if (strcmp(iPlaceholder, "#D#") == 0) {
-    if (CurDirection == CLOCKWISE) CurDirection = COUNTERCLOCKWISE;
-    else if (CurDirection == COUNTERCLOCKWISE) CurDirection = CLOCKWISE;
-    if (FastChng == 1) delay(SLOW_FASTCHANGEDELAY);
+    if (CurDirection == CLOCKWISE)
+      CurDirection = COUNTERCLOCKWISE;
+    else if (CurDirection == COUNTERCLOCKWISE)
+      CurDirection = CLOCKWISE;
+    if (FastChng == 1)
+      delay(SLOW_FASTCHANGEDELAY);
   }
 }
 
-//============================================================================================
-// showMenu
-//============================================================================================
-// Generic routine to display menu and return the choice made
-// The menuItems to display are passed using an array
-// The first entry of the array is the name of the menu
-//============================================================================================
+// Generic routine to display menu and return the choice made.
+// The `menuItems` to display are passed using an array.
+// The first entry of the array is the name of the menu.
 int showMenu(int iItemsCount, char iMenuItems[][MENUITEM_LENGTH]) {
-
   int MenuPos = 1;
 
   Serial.println("Entering showMenu");
@@ -550,25 +587,30 @@ int showMenu(int iItemsCount, char iMenuItems[][MENUITEM_LENGTH]) {
   lcd.setCursor(0, 1);
   if (iMenuItems[MenuPos][0] == '#') {
     placeholderPrint(iMenuItems[MenuPos]);
-  } else lcd.print(iMenuItems[MenuPos]);
+  } else
+    lcd.print(iMenuItems[MenuPos]);
   readInputs();
   while (!keyPressed()) {
     if (!noDirection()) {
       if (leftPressed()) {
         MenuPos++;
-        if (MenuPos > iItemsCount - 1) MenuPos = 1;
+        if (MenuPos > iItemsCount - 1)
+          MenuPos = 1;
         lcd.setCursor(0, 1);
         if (iMenuItems[MenuPos][0] == '#') {
           placeholderPrint(iMenuItems[MenuPos]);
-        } else lcd.print(iMenuItems[MenuPos]);
+        } else
+          lcd.print(iMenuItems[MenuPos]);
       }
       if (rightPressed()) {
         MenuPos--;
-        if (MenuPos < 1) MenuPos = iItemsCount - 1;
+        if (MenuPos < 1)
+          MenuPos = iItemsCount - 1;
         lcd.setCursor(0, 1);
         if (iMenuItems[MenuPos][0] == '#') {
           placeholderPrint(iMenuItems[MenuPos]);
-        } else lcd.print(iMenuItems[MenuPos]);
+        } else
+          lcd.print(iMenuItems[MenuPos]);
       }
       if (upPressed() || FastChng == 1) {
         if (iMenuItems[MenuPos][0] == '#') {
@@ -588,9 +630,7 @@ int showMenu(int iItemsCount, char iMenuItems[][MENUITEM_LENGTH]) {
   return (MenuPos);
 }
 
-//============================================================================================
-// takePhoto - send the correct key to the smartphone over BLE to take a picture
-//============================================================================================
+// Sends the emulated bluetooth key to the smartphone over BLE to take a picture.
 void takePhoto() {
   if (myKB.isConnected()) {
     if (CurKey2Send == 2) {
@@ -605,9 +645,7 @@ void takePhoto() {
   }
 }
 
-//============================================================================================
-// photoDialog - the dialog of the Photogrammetric mode
-//============================================================================================
+// Handles the dialog and interfacing for Photogrammetric mode.
 void photoDialog() {
   int MenuChoice = 0;
   while (MenuChoice != 6) {
@@ -626,7 +664,8 @@ void photoDialog() {
             // Calculate number of steps between photo's
             int numSteps = FullRev / CurPhotos;
             // Determine direction
-            if (CurDirection == CLOCKWISE) numSteps = -numSteps;
+            if (CurDirection == CLOCKWISE)
+              numSteps = -numSteps;
 
             int i = 1;
             do {
@@ -641,8 +680,7 @@ void photoDialog() {
               delay(CurDelayAfter * 1000);
               i++;
             } while (i <= CurPhotos);
-            digitalWrite(16, LOW);  // logic level is low
-            digitalWrite(17, LOW);  // logic level is low
+            stop();
             break;
           } else {
             // Phone is not connected, display warning and don't start photos
@@ -670,9 +708,7 @@ void photoDialog() {
   return;
 }
 
-//============================================================================================
-// cineDialog - the dialog of the Cinematic mode
-//============================================================================================
+// Handles the dialog and interfacing for Cinematic mode.
 void cineDialog() {
   int MenuChoice = 0;
   while (MenuChoice != 4) {
@@ -690,7 +726,8 @@ void cineDialog() {
           myStepper.setSpeed(CurSpeed);  // Set RPM of steppermotor
           int numSteps = FullRev;
           // Determine direction
-          if (CurDirection == CLOCKWISE) numSteps = -numSteps;
+          if (CurDirection == CLOCKWISE)
+            numSteps = -numSteps;
           do {
             lcd.setCursor(0, 1);
             lcd.print("Turn ");
@@ -700,8 +737,7 @@ void cineDialog() {
             myStepper.step(numSteps);
             i++;
           } while (i <= CurTurns);
-          digitalWrite(16, LOW);  // logic level is low
-          digitalWrite(17, LOW);  // logic level is low
+          stop();
           break;
         }
       default:
@@ -713,9 +749,7 @@ void cineDialog() {
   return;
 }
 
-//============================================================================================
-// manualDialog - the dialog of the Manual mode
-//============================================================================================
+// Handles the dialog and interfacing for Manual mode.
 void manualDialog() {
   int MenuChoice = 0;
   while (MenuChoice != 4) {
@@ -742,8 +776,7 @@ void manualDialog() {
               myStepper.step(CurStepSize * 100);
             }
           } while (!keyPressed());
-          digitalWrite(16, LOW);  // logic level is low
-          digitalWrite(17, LOW);  // logic level is low
+          stop();
           break;
         }
       default:
@@ -755,9 +788,16 @@ void manualDialog() {
   return;
 }
 
-//============================================================================================
-// defaultsDialog - the dialog of the operation defaults ( saving to EEPROM )
-//============================================================================================
+// Turns off (sets digital pins' power to LOW) stepper motor pins.
+// Prevents overheating from constant signal.
+void stop() {
+  digitalWrite(IN1_PIN, LOW);
+  digitalWrite(IN2_PIN, LOW);
+  digitalWrite(IN3_PIN, LOW);
+  digitalWrite(IN4_PIN, LOW);
+}
+
+// the dialog of the operation defaults ( saving to EEPROM )
 void defaultsDialog() {
   int MenuChoice = 0;
   while (MenuChoice != 10) {
@@ -788,9 +828,7 @@ void defaultsDialog() {
   return;
 }
 
-//============================================================================================
-// mainMenu - the main menu dialog
-//============================================================================================
+// Displays the main menu dialog
 void mainMenu() {
   int MenuChoice;
 
@@ -820,9 +858,6 @@ void mainMenu() {
   }
 }
 
-//============================================================================================
-// loop - the main loop
-//============================================================================================
 void loop() {
   CurTurns = MyDefaults.DefaultTurns;
   CurSpeed = MyDefaults.DefaultSpeed;
@@ -832,6 +867,6 @@ void loop() {
   CurDelayBefore = MyDefaults.DefaultDelayBefore;
   CurDelayAfter = MyDefaults.DefaultDelayAfter;
   CurDirection = MyDefaults.DefaultDirection;
-  myStepper.setSpeed(CurSpeed);  // Set RPM of steppermotor
+  myStepper.setSpeed(CurSpeed);
   mainMenu();
 }

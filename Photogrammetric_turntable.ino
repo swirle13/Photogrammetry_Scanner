@@ -31,7 +31,7 @@
   FROM THE RELEASES PAGE https://github.com/T-vK/ESP32-BLE-Keyboard/releases OR
   DIRECTLY FROM
       https://github.com/T-vK/ESP32-BLE-Keyboard/archive/refs/tags/0.3.2-beta.zip
-  * NimBLE-Arduino 1.4.1+ library. Install ia Library Manager on left side by
+  * NimBLE-Arduino 1.4.1+ library. Install via Library Manager on left side by
   searching name and clicking "Install"
 
   NOTE: There is an issue with pairing with the phone (perhaps Android-specific)
